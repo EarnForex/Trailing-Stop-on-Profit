@@ -105,7 +105,7 @@ void TrailingStop()
 
         if (OrderType() == OP_BUY)
         {
-            if (NormalizeDouble(Bid - OrderOpenPrice(), _Digits) > NormalizeDouble(P, _Digits))
+            if (NormalizeDouble(Bid - OrderOpenPrice(), _Digits) >= NormalizeDouble(P, _Digits))
             {
                 if ((TSTP != 0) && (OrderStopLoss() < NormalizeDouble(Bid - TSTP, _Digits)))
                 {
@@ -115,9 +115,9 @@ void TrailingStop()
         }
         else if (OrderType() == OP_SELL)
         {
-            if ((TSTP != 0) && (NormalizeDouble(OrderOpenPrice() - Ask, _Digits) > TSTP))
+            if (NormalizeDouble(OrderOpenPrice() - Ask, _Digits) >= NormalizeDouble(P, _Digits))
             {
-                if ((OrderStopLoss() > NormalizeDouble(Ask + TSTP, _Digits)) || (OrderStopLoss() == 0))
+                if ((TSTP != 0) && ((OrderStopLoss() > NormalizeDouble(Ask + TSTP, _Digits)) || (OrderStopLoss() == 0)))
                 {
                     ModifyOrder(OrderTicket(), OrderOpenPrice(), NormalizeDouble(Ask + TSTP, _Digits), OrderTakeProfit());
                 }

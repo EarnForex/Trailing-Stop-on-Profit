@@ -123,7 +123,7 @@ void TrailingStop()
 
         if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
         {
-            if (NormalizeDouble(Bid - OpenPrice, _Digits) > NormalizeDouble(P, _Digits))
+            if (NormalizeDouble(Bid - OpenPrice, _Digits) >= NormalizeDouble(P, _Digits))
             {
                 if ((TSTP != 0) && (StopLoss < NormalizeDouble(Bid - TSTP, _Digits)))
                 {
@@ -133,9 +133,9 @@ void TrailingStop()
         }
         else if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
         {
-            if ((TSTP != 0) && (NormalizeDouble(OpenPrice - Ask, _Digits) > TSTP))
+            if (NormalizeDouble(OpenPrice - Ask, _Digits) >= NormalizeDouble(P, _Digits))
             {
-                if ((StopLoss > NormalizeDouble(Ask + TSTP, _Digits)) || (StopLoss == 0))
+                if ((TSTP != 0) && ((StopLoss > NormalizeDouble(Ask + TSTP, _Digits)) || (StopLoss == 0)))
                 {
                     ModifyPosition(ticket, OpenPrice, NormalizeDouble(Ask + TSTP, _Digits), TakeProfit);
                 }
