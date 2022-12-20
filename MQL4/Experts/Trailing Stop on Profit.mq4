@@ -1,5 +1,5 @@
 #property link          "https://www.earnforex.com/metatrader-expert-advisors/Trailing-Stop-on-Profit/"
-#property version       "1.00"
+#property version       "1.01"
 #property strict
 #property copyright     "EarnForex.com - 2022"
 #property description   "This Expert Advisor will start trailing the stop-loss after a given profit is reached."
