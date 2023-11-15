@@ -1,7 +1,7 @@
 #property link          "https://www.earnforex.com/metatrader-expert-advisors/Trailing-Stop-on-Profit/"
-#property version       "1.01"
+#property version       "1.02"
 #property strict
-#property copyright     "EarnForex.com - 2022"
+#property copyright     "EarnForex.com - 2023"
 #property description   "This Expert Advisor will start trailing the stop-loss after a given profit is reached."
 #property description   " "
 #property description   "WARNING: No warranty. This EA is offered \"as is\". Use at your own risk.\r\n"
@@ -21,6 +21,7 @@ input string Comment_1 = "====================";   // Expert Advisor Settings
 input int TrailingStop = 50;                       // Trailing Stop, points
 input int Profit = 100;                            // Profit in points when TS should kick in.
 input string Comment_2 = "====================";   // Orders Filtering Options
+input bool OnlyCurrentSymbol = true;               // Apply to current symbol only
 input ENUM_CONSIDER OnlyType = All;                // Apply to
 input bool UseMagic = false;                       // Filter by magic number
 input int MagicNumber = 0;                         // Magic number (if above is true)
@@ -34,7 +35,7 @@ input bool SendApp = true;                         // Send notification to mobil
 input bool SendEmail = true;                       // Send notification via email
 input string Comment_3a = "====================";  // Graphical Window
 input bool ShowPanel = true;                       // Show graphical panel
-input string IndicatorName = "TSOP";               // Indicator name (to name the objects)
+input string ExpertName = "TSOP";                  // Expert name (to name the objects)
 input int Xoff = 20;                               // Horizontal spacing for the control panel
 input int Yoff = 20;                               // Vertical spacing for the control panel
 
@@ -94,39 +95,55 @@ void TrailingStop()
             Print("ERROR - ", ErrorText);
             break;
         }
-        if (OrderSymbol() != Symbol()) continue;
+        if ((OnlyCurrentSymbol) && (OrderSymbol() != Symbol())) continue;
         if ((UseMagic) && (OrderMagicNumber() != MagicNumber)) continue;
         if ((UseComment) && (StringFind(OrderComment(), CommentFilter) < 0)) continue;
         if ((OnlyType != All) && (OrderType() != OnlyType)) continue;
 
+        int eDigits = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
+        double point = MarketInfo(OrderSymbol(), MODE_POINT);
+        double ask = SymbolInfoDouble(OrderSymbol(), SYMBOL_ASK);
+        double bid = SymbolInfoDouble(OrderSymbol(), SYMBOL_BID);
+        double TickSize = SymbolInfoDouble(OrderSymbol(), SYMBOL_TRADE_TICK_SIZE);
+        
         // Normalize trailing stop value to the point value.
-        double TSTP = TrailingStop * _Point;
-        double P = Profit * _Point;
+        double TSTP = TrailingStop * point;
+        double P = Profit * point;
 
         if (OrderType() == OP_BUY)
         {
-            if (NormalizeDouble(Bid - OrderOpenPrice(), _Digits) >= NormalizeDouble(P, _Digits))
+            if (NormalizeDouble(bid - OrderOpenPrice(), eDigits) >= NormalizeDouble(P, eDigits))
             {
-                if ((TSTP != 0) && (OrderStopLoss() < NormalizeDouble(Bid - TSTP, _Digits)))
+                double new_sl = NormalizeDouble(bid - TSTP, eDigits);
+                if (TickSize > 0) // Adjust for tick size granularity.
                 {
-                    ModifyOrder(OrderTicket(), OrderOpenPrice(), NormalizeDouble(Bid - TSTP, _Digits), OrderTakeProfit());
+                    new_sl = NormalizeDouble(MathRound(new_sl / TickSize) * TickSize, eDigits);
+                }
+                if ((TSTP != 0) && (OrderStopLoss() < new_sl))
+                {
+                    ModifyOrder(OrderTicket(), OrderOpenPrice(), new_sl, OrderTakeProfit(), OrderSymbol());
                 }
             }
         }
         else if (OrderType() == OP_SELL)
         {
-            if (NormalizeDouble(OrderOpenPrice() - Ask, _Digits) >= NormalizeDouble(P, _Digits))
+            if (NormalizeDouble(OrderOpenPrice() - ask, eDigits) >= NormalizeDouble(P, eDigits))
             {
-                if ((TSTP != 0) && ((OrderStopLoss() > NormalizeDouble(Ask + TSTP, _Digits)) || (OrderStopLoss() == 0)))
+                double new_sl = NormalizeDouble(ask + TSTP, eDigits);
+                if (TickSize > 0) // Adjust for tick size granularity.
                 {
-                    ModifyOrder(OrderTicket(), OrderOpenPrice(), NormalizeDouble(Ask + TSTP, _Digits), OrderTakeProfit());
+                    new_sl = NormalizeDouble(MathRound(new_sl / TickSize) * TickSize, eDigits);
+                }
+                if ((TSTP != 0) && ((OrderStopLoss() > new_sl) || (OrderStopLoss() == 0)))
+                {
+                    ModifyOrder(OrderTicket(), OrderOpenPrice(), new_sl, OrderTakeProfit(), OrderSymbol());
                 }
             }
         }
     }
 }
 
-void ModifyOrder(int Ticket, double OpenPrice, double SLPrice, double TPPrice)
+void ModifyOrder(int Ticket, double OpenPrice, double SLPrice, double TPPrice, string symbol)
 {
     for (int i = 1; i <= OrderOpRetry; i++) // Several attempts to modify the order.
     {
@@ -134,7 +151,7 @@ void ModifyOrder(int Ticket, double OpenPrice, double SLPrice, double TPPrice)
         if (result)
         {
             Print("TRADE - UPDATE SUCCESS - Order ", Ticket, " new stop-loss ", SLPrice);
-            NotifyStopLossUpdate(Ticket, SLPrice);
+            NotifyStopLossUpdate(Ticket, SLPrice, symbol);
             break;
         }
         else
@@ -143,22 +160,22 @@ void ModifyOrder(int Ticket, double OpenPrice, double SLPrice, double TPPrice)
             string ErrorText = ErrorDescription(Error);
             Print("ERROR - UPDATE FAILED - error modifying order ", Ticket, " return error: ", Error, " Open=", OpenPrice,
                   " Old SL=", OrderStopLoss(),
-                  " New SL=", SLPrice, " Bid=", MarketInfo(OrderSymbol(), MODE_BID), " Ask=", MarketInfo(OrderSymbol(), MODE_ASK));
+                  " New SL=", SLPrice, " Bid=", MarketInfo(symbol, MODE_BID), " Ask=", MarketInfo(symbol, MODE_ASK));
             Print("ERROR - ", ErrorText);
         }
     }
 }
 
-void NotifyStopLossUpdate(int Ticket, double SLPrice)
+void NotifyStopLossUpdate(int Ticket, double SLPrice, string symbol)
 {
     if (!EnableNotify) return;
     if ((!SendAlert) && (!SendApp) && (!SendEmail)) return;
-    string EmailSubject = IndicatorName + " " + Symbol() + " Notification";
-    string EmailBody = AccountCompany() + " - " + AccountName() + " - " + IntegerToString(AccountNumber()) + "\r\n\r\n" + IndicatorName + " Notification for " + Symbol() + "\r\n\r\n";
+    string EmailSubject = ExpertName + " " + symbol + " Notification";
+    string EmailBody = AccountCompany() + " - " + AccountName() + " - " + IntegerToString(AccountNumber()) + "\r\n\r\n" + ExpertName + " Notification for " + symbol + "\r\n\r\n";
     EmailBody += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
-    string AlertText = IndicatorName + " - " + Symbol() + " Notification: ";
+    string AlertText = ExpertName + " - " + Symbol() + " Notification: ";
     AlertText += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
-    string AppText = AccountCompany() + " - " + AccountName() + " - " + IntegerToString(AccountNumber()) + " - " + IndicatorName + " - " + Symbol() + " - ";
+    string AppText = AccountCompany() + " - " + AccountName() + " - " + IntegerToString(AccountNumber()) + " - " + ExpertName + " - " + symbol + " - ";
     AppText += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
     if (SendAlert) Alert(AlertText);
     if (SendEmail)
@@ -169,12 +186,12 @@ void NotifyStopLossUpdate(int Ticket, double SLPrice)
     {
         if (!SendNotification(AppText)) Print("Error sending notification " + IntegerToString(GetLastError()));
     }
-    Print(IndicatorName + " - last notification sent on " + TimeToString(TimeCurrent()));
+    Print(ExpertName + " - last notification sent on " + TimeToString(TimeCurrent()));
 }
 
-string PanelBase = IndicatorName + "-P-BAS";
-string PanelLabel = IndicatorName + "-P-LAB";
-string PanelEnableDisable = IndicatorName + "-P-ENADIS";
+string PanelBase = ExpertName + "-P-BAS";
+string PanelLabel = ExpertName + "-P-LAB";
+string PanelEnableDisable = ExpertName + "-P-ENADIS";
 
 int PanelMovX = 50;
 int PanelMovY = 20;
@@ -256,7 +273,7 @@ void DrawPanel()
 
 void CleanPanel()
 {
-    ObjectsDeleteAll(ChartID(), IndicatorName);
+    ObjectsDeleteAll(ChartID(), ExpertName);
 }
 
 void ChangeTrailingEnabled()

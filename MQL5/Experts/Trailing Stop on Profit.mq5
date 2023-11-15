@@ -1,7 +1,7 @@
 ﻿#property link          "https://www.earnforex.com/metatrader-expert-advisors/Trailing-Stop-on-Profit/"
-#property version       "1.01"
+#property version       "1.02"
 #property strict
-#property copyright     "EarnForex.com - 2022"
+#property copyright     "EarnForex.com - 2023"
 #property description   "This Expert Advisor will start trailing the stop-loss after a given profit is reached."
 #property description   " "
 #property description   "WARNING: No warranty. This EA is offered \"as is\". Use at your own risk.\r\n"
@@ -22,6 +22,7 @@ input group "Expert advisor settings"
 input int TrailingStop = 50;                       // Trailing Stop, points
 input int Profit = 100;                            // Profit in points when TS should kick in.
 input group "Orders filtering options"
+input bool OnlyCurrentSymbol = true;               // Apply to current symbol only
 input ENUM_CONSIDER OnlyType = All;                // Apply to
 input bool UseMagic = false;                       // Filter by magic number
 input int MagicNumber = 0;                         // Magic number (if above is true)
@@ -35,7 +36,7 @@ input bool SendApp = true;                         // Send notification to mobil
 input bool SendEmail = true;                       // Send notification via email
 input group "Graphical window"
 input bool ShowPanel = true;                       // Show graphical panel
-input string IndicatorName = "TSOP";               // Indicator name (to name the objects)
+input string ExpertName = "TSOP";                  // Expert name (to name the objects)
 input int Xoff = 20;                               // Horizontal spacing for the control panel
 input int Yoff = 20;                               // Vertical spacing for the control panel
 
@@ -106,45 +107,59 @@ void TrailingStop()
         if (SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_TRADE_MODE) == SYMBOL_TRADE_MODE_DISABLED) continue;
         
         // Filters.
-        if (PositionGetString(POSITION_SYMBOL) != Symbol()) continue;
+        if ((OnlyCurrentSymbol) && (PositionGetString(POSITION_SYMBOL) != Symbol())) continue;
         if ((UseMagic) && (PositionGetInteger(POSITION_MAGIC) != MagicNumber)) continue;
         if ((UseComment) && (StringFind(PositionGetString(POSITION_COMMENT), CommentFilter) < 0)) continue;
         if ((OnlyType != All) && (PositionGetInteger(POSITION_TYPE) != OnlyType)) continue;
 
+        double point = SymbolInfoDouble(PositionGetString(POSITION_SYMBOL), SYMBOL_POINT);
+        
         // Normalize trailing stop value to the point value.
-        double TSTP = TrailingStop * _Point;
-        double P = Profit * _Point;
+        double TSTP = TrailingStop * point;
+        double P = Profit * point;
 
-        double Bid = SymbolInfoDouble(Symbol(), SYMBOL_BID);
-        double Ask = SymbolInfoDouble(Symbol(), SYMBOL_ASK);
+        double Bid = SymbolInfoDouble(PositionGetString(POSITION_SYMBOL), SYMBOL_BID);
+        double Ask = SymbolInfoDouble(PositionGetString(POSITION_SYMBOL), SYMBOL_ASK);
         double OpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
         double StopLoss = PositionGetDouble(POSITION_SL);
         double TakeProfit = PositionGetDouble(POSITION_TP);
+        int eDigits = (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS);
+        double TickSize = SymbolInfoDouble(OrderSymbol(), SYMBOL_TRADE_TICK_SIZE);
 
         if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
         {
-            if (NormalizeDouble(Bid - OpenPrice, _Digits) >= NormalizeDouble(P, _Digits))
+            if (NormalizeDouble(Bid - OpenPrice, eDigits) >= NormalizeDouble(P, eDigits))
             {
-                if ((TSTP != 0) && (StopLoss < NormalizeDouble(Bid - TSTP, _Digits)))
+                double new_sl = NormalizeDouble(Bid - TSTP, eDigits);
+                if (TickSize > 0) // Adjust for tick size granularity.
                 {
-                    ModifyPosition(ticket, OpenPrice, NormalizeDouble(Bid - TSTP, _Digits), TakeProfit);
+                    new_sl = NormalizeDouble(MathRound(new_sl / TickSize) * TickSize, eDigits);
+                }
+                if ((TSTP != 0) && (StopLoss < new_sl))
+                {
+                    ModifyPosition(ticket, OpenPrice, new_sl, TakeProfit, PositionGetString(POSITION_SYMBOL));
                 }
             }
         }
         else if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
         {
-            if (NormalizeDouble(OpenPrice - Ask, _Digits) >= NormalizeDouble(P, _Digits))
+            if (NormalizeDouble(OpenPrice - Ask, eDigits) >= NormalizeDouble(P, eDigits))
             {
-                if ((TSTP != 0) && ((StopLoss > NormalizeDouble(Ask + TSTP, _Digits)) || (StopLoss == 0)))
+                double new_sl = NormalizeDouble(Ask + TSTP, eDigits);
+                if (TickSize > 0) // Adjust for tick size granularity.
                 {
-                    ModifyPosition(ticket, OpenPrice, NormalizeDouble(Ask + TSTP, _Digits), TakeProfit);
+                    new_sl = NormalizeDouble(MathRound(new_sl / TickSize) * TickSize, eDigits);
+                }
+                if ((TSTP != 0) && ((StopLoss > new_sl) || (StopLoss == 0)))
+                {
+                    ModifyPosition(ticket, OpenPrice, new_sl, TakeProfit, PositionGetString(POSITION_SYMBOL));
                 }
             }
         }
     }
 }
 
-void ModifyPosition(ulong Ticket, double OpenPrice, double SLPrice, double TPPrice)
+void ModifyPosition(ulong Ticket, double OpenPrice, double SLPrice, double TPPrice, string symbol)
 {
     for (int i = 1; i <= OrderOpRetry; i++) // Several attempts to modify the position.
     {
@@ -152,7 +167,7 @@ void ModifyPosition(ulong Ticket, double OpenPrice, double SLPrice, double TPPri
         if (result)
         {
             Print("TRADE - UPDATE SUCCESS - Order ", Ticket, " new stop-loss ", SLPrice);
-            NotifyStopLossUpdate(Ticket, SLPrice);
+            NotifyStopLossUpdate(Ticket, SLPrice, symbol);
             break;
         }
         else
@@ -161,22 +176,21 @@ void ModifyPosition(ulong Ticket, double OpenPrice, double SLPrice, double TPPri
             string ErrorText = ErrorDescription(Error);
             Print("ERROR - UPDATE FAILED - error modifying order ", Ticket, " return error: ", Error, " Open=", OpenPrice,
                   " Old SL=", PositionGetDouble(POSITION_SL),
-                  " New SL=", SLPrice, " Bid=", SymbolInfoDouble(Symbol(), SYMBOL_BID), " Ask=", SymbolInfoDouble(Symbol(), SYMBOL_ASK));
+                  " New SL=", SLPrice, " Bid=", SymbolInfoDouble(symbol, SYMBOL_BID), " Ask=", SymbolInfoDouble(symbol, SYMBOL_ASK));
             Print("ERROR - ", ErrorText);
         }
     }
 }
 
-void NotifyStopLossUpdate(ulong Ticket, double SLPrice)
+void NotifyStopLossUpdate(ulong Ticket, double SLPrice, string symbol)
 {
     if (!EnableNotify) return;
     if ((!SendAlert) && (!SendApp) && (!SendEmail)) return;
-    string EmailSubject = IndicatorName + " " + Symbol() + " Notification";
-    string EmailBody = AccountInfoString(ACCOUNT_COMPANY) + " - " + AccountInfoString(ACCOUNT_NAME) + " - " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + "\r\n\r\n" + IndicatorName + " Notification for " + Symbol() + "\r\n\r\n";
+    string EmailSubject = ExpertName + " " + Symbol() + " Notification";
+    string EmailBody = AccountInfoString(ACCOUNT_COMPANY) + " - " + AccountInfoString(ACCOUNT_NAME) + " - " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + "\r\n\r\n" + ExpertName + " Notification for " + symbol + "\r\n\r\n";
     EmailBody += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
-    string AlertText = IndicatorName + " - Notification: ";
-    AlertText += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
-    string AppText = AccountInfoString(ACCOUNT_COMPANY) + " - " + AccountInfoString(ACCOUNT_NAME) + " - " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + " - " + IndicatorName + " - " + Symbol() + " - ";
+    string AlertText = symbol + " - Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
+    string AppText = AccountInfoString(ACCOUNT_COMPANY) + " - " + AccountInfoString(ACCOUNT_NAME) + " - " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + " - " + ExpertName + " - " + symbol + " - ";
     AppText += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
     if (SendAlert) Alert(AlertText);
     if (SendEmail)
@@ -187,12 +201,12 @@ void NotifyStopLossUpdate(ulong Ticket, double SLPrice)
     {
         if (!SendNotification(AppText)) Print("Error sending notification " + IntegerToString(GetLastError()));
     }
-    Print(IndicatorName + " - last notification sent on " + TimeToString(TimeCurrent()));
+    Print(ExpertName + " - last notification sent on " + TimeToString(TimeCurrent()));
 }
 
-string PanelBase = IndicatorName + "-P-BAS";
-string PanelLabel = IndicatorName + "-P-LAB";
-string PanelEnableDisable = IndicatorName + "-P-ENADIS";
+string PanelBase = ExpertName + "-P-BAS";
+string PanelLabel = ExpertName + "-P-LAB";
+string PanelEnableDisable = ExpertName + "-P-ENADIS";
 
 int PanelMovX = 50;
 int PanelMovY = 20;
@@ -275,7 +289,7 @@ void DrawPanel()
 
 void CleanPanel()
 {
-    ObjectsDeleteAll(ChartID(), IndicatorName);
+    ObjectsDeleteAll(ChartID(), ExpertName);
 }
 
 void ChangeTrailingEnabled()
