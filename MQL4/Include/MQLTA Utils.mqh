@@ -1,29 +1,24 @@
 #property link          "https://www.earnforex.com/"
 #property version       "1.01"
 #property strict
-#property copyright     "EarnForex.com - 2020-2021"
-#property description   ""
-#property description   ""
-#property description   ""
-#property description   ""
-#property description   "Find More on EarnForex.com"
+#property copyright     "EarnForex.com - 2020-2024"
 
-//Draw an edit box with the specified parameters
-void DrawEdit( string Name,
-               int XStart,
-               int YStart,
-               int Width,
-               int Height,
-               bool ReadOnly,
-               int EditFontSize,
-               string Tooltip,
-               int Align,
-               string EditFont,
-               string Text,
-               bool Selectable,
-               color TextColor = clrBlack,
-               color BGColor = clrWhiteSmoke,
-               color BDColor = clrBlack
+// Draw an edit box with the specified parameters.
+void DrawEdit(string Name,
+              int XStart,
+              int YStart,
+              int Width,
+              int Height,
+              bool ReadOnly,
+              int EditFontSize,
+              string Tooltip,
+              int Align,
+              string EditFont,
+              string Text,
+              bool Selectable,
+              color TextColor = clrBlack,
+              color BGColor = clrWhiteSmoke,
+              color BDColor = clrBlack
              )
 {
 

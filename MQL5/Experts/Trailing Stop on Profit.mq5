@@ -1,9 +1,9 @@
 ﻿#property link          "https://www.earnforex.com/metatrader-expert-advisors/Trailing-Stop-on-Profit/"
-#property version       "1.02"
-#property strict
-#property copyright     "EarnForex.com - 2023"
-#property description   "This Expert Advisor will start trailing the stop-loss after a given profit is reached."
-#property description   " "
+#property version       "1.03"
+
+#property copyright     "EarnForex.com - 2023-2025"
+#property description   "This expert advisor will start trailing the stop-loss after a given profit is reached."
+#property description   ""
 #property description   "WARNING: No warranty. This EA is offered \"as is\". Use at your own risk.\r\n"
 #property icon          "\\Files\\EF-Icon-64x64px.ico"
 
@@ -39,14 +39,26 @@ input bool ShowPanel = true;                       // Show graphical panel
 input string ExpertName = "TSOP";                  // Expert name (to name the objects)
 input int Xoff = 20;                               // Horizontal spacing for the control panel
 input int Yoff = 20;                               // Vertical spacing for the control panel
+input ENUM_BASE_CORNER ChartCorner = CORNER_LEFT_UPPER; // Chart Corner
+input int FontSize = 10;                          // Font Size
 
 int OrderOpRetry = 5; // Number of position modification attempts.
+double DPIScale; // Scaling parameter for the panel based on the screen DPI.
+int PanelMovY, PanelLabX, PanelLabY, PanelRecX;
 bool EnableTrailing = EnableTrailingParam;
 CTrade *Trade;
 
 void OnInit()
 {
     EnableTrailing = EnableTrailingParam;
+
+    DPIScale = (double)TerminalInfoInteger(TERMINAL_SCREEN_DPI) / 96.0;
+
+    PanelMovY = (int)MathRound(20 * DPIScale);
+    PanelLabX = (int)MathRound(150 * DPIScale);
+    PanelLabY = PanelMovY;
+    PanelRecX = PanelLabX + 4;
+
     if (ShowPanel) DrawPanel();
     Trade = new CTrade;
 }
@@ -59,7 +71,7 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
-    if (EnableTrailing) TrailingStop();
+    if (EnableTrailing) DoTrailingStop();
     if (ShowPanel) DrawPanel();
 }
 
@@ -87,7 +99,7 @@ void OnChartEvent(const int id,
     }
 }
 
-void TrailingStop()
+void DoTrailingStop()
 {
     for (int i = PositionsTotal() - 1; i >= 0; i--)
     {
@@ -208,37 +220,42 @@ string PanelBase = ExpertName + "-P-BAS";
 string PanelLabel = ExpertName + "-P-LAB";
 string PanelEnableDisable = ExpertName + "-P-ENADIS";
 
-int PanelMovX = 50;
-int PanelMovY = 20;
-int PanelLabX = 150;
-int PanelLabY = PanelMovY;
-int PanelRecX = PanelLabX + 4;
-
 void DrawPanel()
 {
+    int SignX = 1;
+    int YAdjustment = 0;
+    if ((ChartCorner == CORNER_RIGHT_UPPER) || (ChartCorner == CORNER_RIGHT_LOWER))
+    {
+        SignX = -1; // Correction for right-side panel position.
+    }
+    if ((ChartCorner == CORNER_RIGHT_LOWER) || (ChartCorner == CORNER_LEFT_LOWER))
+    {
+        YAdjustment = (PanelMovY + 2) * 2 + 1 - PanelLabY; // Correction for upper side panel position.
+    }
+
     string PanelText = "TSL on Profit";
     string PanelToolTip = "Trailing Stop on Profit by EarnForex";
     int Rows = 1;
     ObjectCreate(ChartID(), PanelBase, OBJ_RECTANGLE_LABEL, 0, 0, 0);
+    ObjectSetInteger(ChartID(), PanelBase, OBJPROP_CORNER, ChartCorner);
     ObjectSetInteger(ChartID(), PanelBase, OBJPROP_XDISTANCE, Xoff);
-    ObjectSetInteger(ChartID(), PanelBase, OBJPROP_YDISTANCE, Yoff);
+    ObjectSetInteger(ChartID(), PanelBase, OBJPROP_YDISTANCE, Yoff + YAdjustment);
     ObjectSetInteger(ChartID(), PanelBase, OBJPROP_XSIZE, PanelRecX);
-    ObjectSetInteger(ChartID(), PanelBase, OBJPROP_YSIZE, (PanelMovY + 2) * 1 + 2);
+    ObjectSetInteger(ChartID(), PanelBase, OBJPROP_YSIZE, (PanelMovY + 1) * (Rows + 1) + 3);
     ObjectSetInteger(ChartID(), PanelBase, OBJPROP_BGCOLOR, clrWhite);
     ObjectSetInteger(ChartID(), PanelBase, OBJPROP_BORDER_TYPE, BORDER_FLAT);
     ObjectSetInteger(ChartID(), PanelBase, OBJPROP_STATE, false);
     ObjectSetInteger(ChartID(), PanelBase, OBJPROP_HIDDEN, true);
-    ObjectSetInteger(ChartID(), PanelBase, OBJPROP_FONTSIZE, 8);
     ObjectSetInteger(ChartID(), PanelBase, OBJPROP_SELECTABLE, false);
     ObjectSetInteger(ChartID(), PanelBase, OBJPROP_COLOR, clrBlack);
 
     DrawEdit(PanelLabel,
-             Xoff + 2,
+             Xoff + 2 * SignX,
              Yoff + 2,
              PanelLabX,
              PanelLabY,
              true,
-             10,
+             FontSize,
              PanelToolTip,
              ALIGN_CENTER,
              "Consolas",
@@ -247,6 +264,7 @@ void DrawPanel()
              clrNavy,
              clrKhaki,
              clrBlack);
+    ObjectSetInteger(ChartID(), PanelLabel, OBJPROP_CORNER, ChartCorner);
 
     string EnableDisabledText = "";
     color EnableDisabledColor = clrNavy;
@@ -265,12 +283,12 @@ void DrawPanel()
     }
 
     DrawEdit(PanelEnableDisable,
-             Xoff + 2,
-             Yoff + (PanelMovY + 1)*Rows + 2,
+             Xoff + 2 * SignX,
+             Yoff + (PanelMovY + 1) * Rows + 2,
              PanelLabX,
              PanelLabY,
              true,
-             8,
+             FontSize,
              "Click to enable or disable the trailing stop feature",
              ALIGN_CENTER,
              "Consolas",
@@ -279,11 +297,7 @@ void DrawPanel()
              EnableDisabledColor,
              EnableDisabledBack,
              clrBlack);
-
-    Rows++;
-
-    ObjectSetInteger(ChartID(), PanelBase, OBJPROP_XSIZE, PanelRecX);
-    ObjectSetInteger(ChartID(), PanelBase, OBJPROP_YSIZE, (PanelMovY + 1)*Rows + 3);
+    ObjectSetInteger(ChartID(), PanelEnableDisable, OBJPROP_CORNER, ChartCorner);
     ChartRedraw();
 }
 
@@ -296,11 +310,17 @@ void ChangeTrailingEnabled()
 {
     if (EnableTrailing == false)
     {
-        if (MQLInfoInteger(MQL_TRADE_ALLOWED)) EnableTrailing = true;
-        else
+        if (!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
         {
-            MessageBox("You need to first enable Autotrading in your MetaTrader options", "WARNING", MB_OK);
+            MessageBox("Algorithmic trading is disabled in the platform's options! Please enable it via Tools->Options->Expert Advisors.", "WARNING", MB_OK);
+            return;
         }
+        if (!MQLInfoInteger(MQL_TRADE_ALLOWED))
+        {
+            MessageBox("Algo Trading is disabled in the Position Sizer's settings! Please tick the Allow Algo Trading checkbox on the Common tab.", "WARNING", MB_OK);
+            return;
+        }
+        EnableTrailing = true;
     }
     else EnableTrailing = false;
     DrawPanel();
