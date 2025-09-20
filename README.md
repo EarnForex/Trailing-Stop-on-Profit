@@ -1,6 +1,6 @@
 # Trailing Stop on Profit
 
-The Trailing Stop on Profit is an expert advisor for MT4 and MT5 developed by EarnForex.com.
+The Trailing Stop on Profit is an expert advisor for MT4, MT5, and cTrader developed by EarnForex.com.
 
 The EA automatically trails stop-losses of trades filtered according to your preferences and only when a trade has reached a certain number of profit points.
 
