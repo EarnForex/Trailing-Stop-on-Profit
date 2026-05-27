@@ -1,7 +1,7 @@
 ﻿#property link          "https://www.earnforex.com/metatrader-expert-advisors/Trailing-Stop-on-Profit/"
-#property version       "1.03"
+#property version       "1.04"
 
-#property copyright     "EarnForex.com - 2023-2025"
+#property copyright     "EarnForex.com - 2023-2026"
 #property description   "This expert advisor will start trailing the stop-loss after a given profit is reached."
 #property description   ""
 #property description   "WARNING: No warranty. This EA is offered \"as is\". Use at your own risk.\r\n"
@@ -19,28 +19,43 @@ enum ENUM_CONSIDER
 };
 
 input group "Expert advisor settings"
-input int TrailingStop = 50;                       // Trailing Stop, points
-input int Profit = 100;                            // Profit in points when TS should kick in.
+input int TrailingStop = 50;                        // Trailing Stop, points
+input int Profit = 100;                             // Profit in points when TS should kick in
+input bool DisableTPonTSL = false;                  // Disable take-profit when TS kicks in?
 input group "Orders filtering options"
-input bool OnlyCurrentSymbol = true;               // Apply to current symbol only
-input ENUM_CONSIDER OnlyType = All;                // Apply to
-input bool UseMagic = false;                       // Filter by magic number
-input int MagicNumber = 0;                         // Magic number (if above is true)
-input bool UseComment = false;                     // Filter by comment
-input string CommentFilter = "";                   // Comment (if above is true)
-input bool EnableTrailingParam = false;            // Enable trailing stop
+input bool OnlyCurrentSymbol = true;                // Apply to current symbol only
+input ENUM_CONSIDER OnlyType = All;                 // Apply to
+input bool UseMagic = false;                        // Filter by magic number
+input int MagicNumber = 0;                          // Magic number (if above is true)
+input bool UseComment = false;                      // Filter by comment
+input string CommentFilter = "";                    // Comment (if above is true)
+input bool EnableTrailingParam = false;             // Enable trailing stop
 input group "Notification options"
-input bool EnableNotify = false;                   // Enable motifications feature
-input bool SendAlert = true;                       // Send alert notification
-input bool SendApp = true;                         // Send notification to mobile
-input bool SendEmail = true;                       // Send notification via email
+input bool EnableNotify = false;                    // Enable notifications feature
+input bool SendAlert = true;                        // Send alert notification
+input bool SendApp = true;                          // Send notification to mobile
+input bool SendEmail = true;                        // Send notification via email
 input group "Graphical window"
-input bool ShowPanel = true;                       // Show graphical panel
-input string ExpertName = "TSOP";                  // Expert name (to name the objects)
-input int Xoff = 20;                               // Horizontal spacing for the control panel
-input int Yoff = 20;                               // Vertical spacing for the control panel
+input bool ShowPanel = true;                        // Show graphical panel
+input string ExpertName = "TSOP";                   // Expert name (to name the objects)
+input int Xoff = 20;                                // Horizontal spacing for the control panel
+input int Yoff = 20;                                // Vertical spacing for the control panel
 input ENUM_BASE_CORNER ChartCorner = CORNER_LEFT_UPPER; // Chart Corner
-input int FontSize = 10;                          // Font Size
+input int FontSize = 10;                            // Font Size
+input group "Potential TSL Lines"
+input bool ShowPotentialSLLines = false;            // Show potential TSL lines
+input color PotentialSLBuyColor = clrDodgerBlue;    // Potential Buy TSL line color
+input color PotentialSLSellColor = clrOrangeRed;    // Potential Sell TSL line color
+input ENUM_LINE_STYLE PotentialSLStyle = STYLE_DOT; // Potential TSL line style
+input int PotentialSLWidth = 1;                     // Potential TSL line width
+input int PotentialSLLabelFontSize = 8;             // Potential TSL label font size
+input group "Activation Lines"
+input bool ShowActivationLines = false;             // Show activation lines
+input color ActivationBuyColor = clrDarkGray;       // Activation Buy line color
+input color ActivationSellColor = clrDarkSlateGray; // Activation Sell line color
+input ENUM_LINE_STYLE ActivationStyle = STYLE_DASH; // Activation line style
+input int ActivationWidth = 1;                      // Activation line width
+input int ActivationFontSize = 8;                   // Activation label font size
 
 int OrderOpRetry = 5; // Number of position modification attempts.
 double DPIScale; // Scaling parameter for the panel based on the screen DPI.
@@ -50,6 +65,11 @@ CTrade *Trade;
 
 void OnInit()
 {
+    if (TrailingStop <= 0)
+    {
+        Alert("Trailing Stop should be > 0.");
+    }
+    
     EnableTrailing = EnableTrailingParam;
 
     DPIScale = (double)TerminalInfoInteger(TERMINAL_SCREEN_DPI) / 96.0;
@@ -61,18 +81,33 @@ void OnInit()
 
     if (ShowPanel) DrawPanel();
     Trade = new CTrade;
+
+    DrawPotentialSLLines();
+    DrawActivationLines();
+
+    // Timer keeps the lines refreshed during off-market hours when ticks stop arriving.
+    if (ShowPotentialSLLines || ShowActivationLines) EventSetTimer(1);
 }
 
 void OnDeinit(const int reason)
 {
     CleanPanel();
+    CleanPotentialSLLines();
+    CleanActivationLines();
     delete Trade;
 }
 
 void OnTick()
 {
     if (EnableTrailing) DoTrailingStop();
-    if (ShowPanel) DrawPanel();
+    DrawPotentialSLLines();
+    DrawActivationLines();
+}
+
+void OnTimer()
+{
+    DrawPotentialSLLines();
+    DrawActivationLines();
 }
 
 void OnChartEvent(const int id,
@@ -87,7 +122,7 @@ void OnChartEvent(const int id,
             ChangeTrailingEnabled();
         }
     }
-    if (id == CHARTEVENT_KEYDOWN)
+    else if (id == CHARTEVENT_KEYDOWN)
     {
         if (lparam == 27) // Escape key.
         {
@@ -96,6 +131,10 @@ void OnChartEvent(const int id,
                 ExpertRemove();
             }
         }
+    }
+    else if (id == CHARTEVENT_CHART_CHANGE)
+    {
+        RepositionLabels();
     }
 }
 
@@ -135,6 +174,7 @@ void DoTrailingStop()
         double OpenPrice = PositionGetDouble(POSITION_PRICE_OPEN);
         double StopLoss = PositionGetDouble(POSITION_SL);
         double TakeProfit = PositionGetDouble(POSITION_TP);
+        if (DisableTPonTSL) TakeProfit = 0;
         int eDigits = (int)SymbolInfoInteger(PositionGetString(POSITION_SYMBOL), SYMBOL_DIGITS);
         double TickSize = SymbolInfoDouble(OrderSymbol(), SYMBOL_TRADE_TICK_SIZE);
 
@@ -173,13 +213,15 @@ void DoTrailingStop()
 
 void ModifyPosition(ulong Ticket, double OpenPrice, double SLPrice, double TPPrice, string symbol)
 {
+    string TP_text = "";
+    if (DisableTPonTSL && PositionGetDouble(POSITION_TP) > 0) TP_text = ". TP set to zero.";
     for (int i = 1; i <= OrderOpRetry; i++) // Several attempts to modify the position.
     {
         bool result = Trade.PositionModify(Ticket, SLPrice, TPPrice);
         if (result)
         {
-            Print("TRADE - UPDATE SUCCESS - Order ", Ticket, " new stop-loss ", SLPrice);
-            NotifyStopLossUpdate(Ticket, SLPrice, symbol);
+            Print("TRADE - UPDATE SUCCESS - Order ", Ticket, " new stop-loss ", SLPrice, TP_text);
+            NotifyStopLossUpdate(Ticket, SLPrice, symbol, TP_text);
             break;
         }
         else
@@ -194,16 +236,17 @@ void ModifyPosition(ulong Ticket, double OpenPrice, double SLPrice, double TPPri
     }
 }
 
-void NotifyStopLossUpdate(ulong Ticket, double SLPrice, string symbol)
+void NotifyStopLossUpdate(ulong Ticket, double SLPrice, string symbol, string TP_text)
 {
     if (!EnableNotify) return;
-    if ((!SendAlert) && (!SendApp) && (!SendEmail)) return;
+    if (!SendAlert && !SendApp && !SendEmail) return;
+    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
     string EmailSubject = ExpertName + " " + Symbol() + " Notification";
     string EmailBody = AccountInfoString(ACCOUNT_COMPANY) + " - " + AccountInfoString(ACCOUNT_NAME) + " - " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + "\r\n\r\n" + ExpertName + " Notification for " + symbol + "\r\n\r\n";
-    EmailBody += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
-    string AlertText = symbol + " - Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
+    EmailBody += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, digits) + TP_text;
+    string AlertText = symbol + " - Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits) + TP_text;
     string AppText = AccountInfoString(ACCOUNT_COMPANY) + " - " + AccountInfoString(ACCOUNT_NAME) + " - " + IntegerToString(AccountInfoInteger(ACCOUNT_LOGIN)) + " - " + ExpertName + " - " + symbol + " - ";
-    AppText += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, _Digits);
+    AppText += "Stop-loss for order " + IntegerToString(Ticket) + " moved to " + DoubleToString(SLPrice, digits) + TP_text;
     if (SendAlert) Alert(AlertText);
     if (SendEmail)
     {
@@ -219,6 +262,10 @@ void NotifyStopLossUpdate(ulong Ticket, double SLPrice, string symbol)
 string PanelBase = ExpertName + "-P-BAS";
 string PanelLabel = ExpertName + "-P-LAB";
 string PanelEnableDisable = ExpertName + "-P-ENADIS";
+string PotentialSLLinePrefix = ExpertName + "-SL-";
+string PotentialSLLabelPrefix = ExpertName + "-SLL-";
+string ActivationLinePrefix = ExpertName + "-ACT-";
+string ActivationLabelPrefix = ExpertName + "-ACTL-";
 
 void DrawPanel()
 {
@@ -304,6 +351,7 @@ void DrawPanel()
 void CleanPanel()
 {
     ObjectsDeleteAll(ChartID(), ExpertName);
+    ChartRedraw();
 }
 
 void ChangeTrailingEnabled()
@@ -324,5 +372,314 @@ void ChangeTrailingEnabled()
     }
     else EnableTrailing = false;
     DrawPanel();
+    DrawActivationLines();
+    ChartRedraw();
+}
+
+void DrawPotentialSLLines()
+{
+    if (!ShowPotentialSLLines)
+    {
+        CleanPotentialSLLines();
+        return;
+    }
+
+    datetime leftTime = GetLeftVisibleBarTime();
+
+    // Collect tickets that should currently have a potential TSL line.
+    ulong activeTickets[];
+    int activeCount = 0;
+
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if (ticket <= 0)
+        {
+            int Error = GetLastError();
+            string ErrorText = ErrorDescription(Error);
+            Print("ERROR - Unable to select the position - ", Error);
+            Print("ERROR - ", ErrorText);
+            continue;
+        }
+
+        if (OnlyCurrentSymbol && PositionGetString(POSITION_SYMBOL) != Symbol()) continue;
+        if (UseMagic && PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        if (UseComment && StringFind(PositionGetString(POSITION_COMMENT), CommentFilter) < 0) continue;
+        if (OnlyType != All && PositionGetInteger(POSITION_TYPE) != OnlyType) continue;
+
+        string Instrument = PositionGetString(POSITION_SYMBOL);
+        double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+        int eDigits = (int)SymbolInfoInteger(Instrument, SYMBOL_DIGITS);
+        double point = SymbolInfoDouble(Instrument, SYMBOL_POINT);
+
+        // Initial TSL = OpenPrice +/- (Profit - TrailingStop) * point.
+        // Rationale: trailing activates after price moves Profit*point in favour;
+        // at that instant the EA places SL TrailingStop*point on the safe side,
+        // so the level depends only on OpenPrice and the EA inputs (i.e. fixed).
+        double slDist = (Profit - TrailingStop) * point;
+
+        double slLevel = 0;
+        color lineColor = clrNONE;
+        string dirLabel = "";
+        if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+        {
+            slLevel = NormalizeDouble(openPrice + slDist, eDigits);
+            // Skip if the position's SL has already been moved to (or beyond) the Initial TSL.
+            // POSITION_SL == 0 (no SL set) naturally fails this check, so the line is kept.
+            if (PositionGetDouble(POSITION_SL) >= slLevel) continue;
+            lineColor = PotentialSLBuyColor;
+            dirLabel = "Buy";
+        }
+        else if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+        {
+            slLevel = NormalizeDouble(openPrice - slDist, eDigits);
+            // For sells, "beyond" means a lower SL. Exclude POSITION_SL == 0 (no SL set).
+            if (PositionGetDouble(POSITION_SL) > 0 && PositionGetDouble(POSITION_SL) <= slLevel) continue;
+            lineColor = PotentialSLSellColor;
+            dirLabel = "Sell";
+        }
+        else continue;
+
+        string lineName = PotentialSLLinePrefix + IntegerToString(ticket);
+        string tooltip = "Initial TSL #" + IntegerToString(ticket) + " " + dirLabel + ": " + DoubleToString(slLevel, eDigits);
+        CreateOrMoveHLine(lineName, slLevel, lineColor, PotentialSLStyle, PotentialSLWidth, tooltip);
+
+        string labelName = PotentialSLLabelPrefix + IntegerToString(ticket);
+        string labelText = "#" + IntegerToString(ticket) + " " + dirLabel + " Initial TSL";
+        CreateOrMoveLabel(labelName, leftTime, slLevel, labelText, lineColor, PotentialSLLabelFontSize);
+
+        ArrayResize(activeTickets, activeCount + 1);
+        activeTickets[activeCount] = ticket;
+        activeCount++;
+    }
+
+    // Remove potential TSL lines + labels for positions that no longer exist or are now filtered out.
+    int totalObjects = ObjectsTotal(0, 0, OBJ_HLINE);
+    for (int i = totalObjects - 1; i >= 0; i--)
+    {
+        string objName = ObjectName(0, i, 0, OBJ_HLINE);
+        if (StringFind(objName, PotentialSLLinePrefix) != 0) continue;
+        string ticketStr = StringSubstr(objName, StringLen(PotentialSLLinePrefix));
+        ulong objTicket = (ulong)StringToInteger(ticketStr);
+        bool found = false;
+        for (int j = 0; j < activeCount; j++)
+        {
+            if (activeTickets[j] == objTicket)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            ObjectDelete(0, objName);
+            ObjectDelete(0, PotentialSLLabelPrefix + ticketStr);
+        }
+    }
+    // Also clean orphaned labels (line was already removed).
+    int totalText = ObjectsTotal(0, 0, OBJ_TEXT);
+    for (int i = totalText - 1; i >= 0; i--)
+    {
+        string objName = ObjectName(0, i, 0, OBJ_TEXT);
+        if (StringFind(objName, PotentialSLLabelPrefix) != 0) continue;
+        string ticketStr = StringSubstr(objName, StringLen(PotentialSLLabelPrefix));
+        ulong objTicket = (ulong)StringToInteger(ticketStr);
+        bool found = false;
+        for (int j = 0; j < activeCount; j++)
+        {
+            if (activeTickets[j] == objTicket)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found) ObjectDelete(0, objName);
+    }
+}
+
+void CleanPotentialSLLines()
+{
+    ObjectsDeleteAll(0, PotentialSLLinePrefix);
+    ObjectsDeleteAll(0, PotentialSLLabelPrefix);
+}
+
+void DrawActivationLines()
+{
+    if (!ShowActivationLines || !EnableTrailing)
+    {
+        CleanActivationLines();
+        return;
+    }
+
+    if (Profit <= 0)
+    {
+        CleanActivationLines();
+        return;
+    }
+
+    datetime leftTime = GetLeftVisibleBarTime();
+
+    // Collect tickets that should currently have an activation line.
+    ulong activeTickets[];
+    int activeCount = 0;
+
+    for (int i = 0; i < PositionsTotal(); i++)
+    {
+        ulong ticket = PositionGetTicket(i);
+        if (ticket <= 0)
+        {
+            int Error = GetLastError();
+            string ErrorText = ErrorDescription(Error);
+            Print("ERROR - Unable to select the position - ", Error);
+            Print("ERROR - ", ErrorText);
+            continue;
+        }
+
+        if (OnlyCurrentSymbol && PositionGetString(POSITION_SYMBOL) != Symbol()) continue;
+        if (UseMagic && PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+        if (UseComment && StringFind(PositionGetString(POSITION_COMMENT), CommentFilter) < 0) continue;
+        if (OnlyType != All && PositionGetInteger(POSITION_TYPE) != OnlyType) continue;
+
+        string Instrument = PositionGetString(POSITION_SYMBOL);
+        double openPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+        int eDigits = (int)SymbolInfoInteger(Instrument, SYMBOL_DIGITS);
+        double point = SymbolInfoDouble(Instrument, SYMBOL_POINT);
+        double activationDist = Profit * point;
+        if (activationDist == 0) continue;
+
+        double activationLevel = 0;
+        color lineColor = clrNONE;
+        string dirLabel = "";
+        if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY)
+        {
+            activationLevel = NormalizeDouble(openPrice + activationDist, eDigits);
+            // Skip activation lines that have already been crossed - trailing is active.
+            if (SymbolInfoDouble(Instrument, SYMBOL_BID) >= activationLevel) continue;
+            lineColor = ActivationBuyColor;
+            dirLabel = "Buy";
+        }
+        else if (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_SELL)
+        {
+            activationLevel = NormalizeDouble(openPrice - activationDist, eDigits);
+            if (SymbolInfoDouble(Instrument, SYMBOL_ASK) <= activationLevel) continue;
+            lineColor = ActivationSellColor;
+            dirLabel = "Sell";
+        }
+        else continue;
+
+        string lineName = ActivationLinePrefix + IntegerToString(ticket);
+        string tooltip = "TSL Activation #" + IntegerToString(ticket) + " " + dirLabel + ": " + DoubleToString(activationLevel, eDigits);
+        CreateOrMoveHLine(lineName, activationLevel, lineColor, ActivationStyle, ActivationWidth, tooltip);
+
+        string labelName = ActivationLabelPrefix + IntegerToString(ticket);
+        string labelText = "#" + IntegerToString(ticket) + " " + dirLabel + " TSL Activation";
+        CreateOrMoveLabel(labelName, leftTime, activationLevel, labelText, lineColor, ActivationFontSize);
+
+        ArrayResize(activeTickets, activeCount + 1);
+        activeTickets[activeCount] = ticket;
+        activeCount++;
+    }
+
+    // Remove activation lines + labels for positions that no longer exist or have activated.
+    int totalObjects = ObjectsTotal(0, 0, OBJ_HLINE);
+    for (int i = totalObjects - 1; i >= 0; i--)
+    {
+        string objName = ObjectName(0, i, 0, OBJ_HLINE);
+        if (StringFind(objName, ActivationLinePrefix) != 0) continue;
+        string ticketStr = StringSubstr(objName, StringLen(ActivationLinePrefix));
+        ulong objTicket = (ulong)StringToInteger(ticketStr);
+        bool found = false;
+        for (int j = 0; j < activeCount; j++)
+        {
+            if (activeTickets[j] == objTicket)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            ObjectDelete(0, objName);
+            ObjectDelete(0, ActivationLabelPrefix + ticketStr);
+        }
+    }
+    // Also clean orphaned labels (line was already removed).
+    int totalText = ObjectsTotal(0, 0, OBJ_TEXT);
+    for (int i = totalText - 1; i >= 0; i--)
+    {
+        string objName = ObjectName(0, i, 0, OBJ_TEXT);
+        if (StringFind(objName, ActivationLabelPrefix) != 0) continue;
+        string ticketStr = StringSubstr(objName, StringLen(ActivationLabelPrefix));
+        ulong objTicket = (ulong)StringToInteger(ticketStr);
+        bool found = false;
+        for (int j = 0; j < activeCount; j++)
+        {
+            if (activeTickets[j] == objTicket)
+            {
+                found = true;
+                break;
+            }
+        }
+        if (!found) ObjectDelete(0, objName);
+    }
+}
+
+void CleanActivationLines()
+{
+    ObjectsDeleteAll(0, ActivationLinePrefix);
+    ObjectsDeleteAll(0, ActivationLabelPrefix);
+}
+
+// Time of the leftmost visible bar - used to anchor text labels.
+datetime GetLeftVisibleBarTime()
+{
+    int firstVisibleBar = (int)ChartGetInteger(0, CHART_FIRST_VISIBLE_BAR);
+    datetime barTime = iTime(Symbol(), PERIOD_CURRENT, firstVisibleBar);
+    if (barTime == 0) barTime = TimeCurrent(); // Fallback.
+    return barTime;
+}
+
+void CreateOrMoveHLine(string name, double price, color clr, ENUM_LINE_STYLE style, int width, string tooltip)
+{
+    ObjectCreate(0, name, OBJ_HLINE, 0, 0, price);
+    ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+    ObjectSetInteger(0, name, OBJPROP_STYLE, style);
+    ObjectSetInteger(0, name, OBJPROP_WIDTH, width);
+    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+    ObjectSetInteger(0, name, OBJPROP_BACK, true);
+    ObjectSetString(0, name, OBJPROP_TOOLTIP, tooltip);
+}
+
+void CreateOrMoveLabel(string name, datetime time, double price, string text, color clr, int fontSize)
+{
+    ObjectCreate(0, name, OBJ_TEXT, 0, time, price);
+    ObjectSetInteger(0, name, OBJPROP_TIME, time);
+    ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+    ObjectSetString(0, name, OBJPROP_TEXT, text);
+    ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+    ObjectSetInteger(0, name, OBJPROP_FONTSIZE, fontSize);
+    ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+    ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_LOWER);
+    ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+    ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+}
+
+// Move EA-owned labels to the current leftmost visible bar so they follow the chart when the user scrolls or zooms.
+void RepositionLabels()
+{
+    if (!ShowActivationLines && !ShowPotentialSLLines) return;
+
+    datetime leftTime = GetLeftVisibleBarTime();
+    int totalText = ObjectsTotal(0, 0, OBJ_TEXT);
+    for (int i = totalText - 1; i >= 0; i--)
+    {
+        string objName = ObjectName(0, i, 0, OBJ_TEXT);
+        if (StringFind(objName, ActivationLabelPrefix) != 0 &&
+            StringFind(objName, PotentialSLLabelPrefix) != 0) continue;
+        ObjectSetInteger(0, objName, OBJPROP_TIME, leftTime);
+    }
+    ChartRedraw();
 }
 //+------------------------------------------------------------------+
